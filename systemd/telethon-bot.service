@@ -4,10 +4,11 @@ After=network.target
 
 [Service]
 User=ubuntu
-WorkingDirectory=/path/to/telethon-session-bot
-ExecStart=/usr/bin/python3 -u /path/to/telethon-session-bot/bot/main.py
-EnvironmentFile=/path/to/telethon-session-bot/.env
+WorkingDirectory=/home/ubuntu/telethon-session-bot
+ExecStart=/home/ubuntu/telethon-session-bot/venv/bin/python3 bot.py
+EnvironmentFile=/home/ubuntu/telethon-session-bot/.env
 Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
