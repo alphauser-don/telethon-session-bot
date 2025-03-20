@@ -1,0 +1,13 @@
+/home/ubuntu/telethon-session-bot/logs/*.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 640 ubuntu ubuntu
+    sharedscripts
+    postrotate
+        systemctl restart telethon-bot >/dev/null 2>&1 || true
+    endscript
+}
