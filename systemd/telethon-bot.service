@@ -1,0 +1,13 @@
+[Unit]
+Description=Telethon Session Bot
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/path/to/telethon-session-bot
+ExecStart=/usr/bin/python3 -u /path/to/telethon-session-bot/bot/main.py
+EnvironmentFile=/path/to/telethon-session-bot/.env
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
