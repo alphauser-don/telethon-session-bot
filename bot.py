@@ -1,7 +1,8 @@
 import os
 import logging
+from datetime import datetime
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -16,6 +17,8 @@ from telethon.errors import (
     PhoneCodeInvalidError,
     PhoneCodeExpiredError
 )
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, func
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 load_dotenv()
 logging.basicConfig(
@@ -23,6 +26,28 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Database setup
+Base = declarative_base()
+engine = create_engine(os.getenv("DATABASE_URL", "sqlite:///users.db"))
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    username = Column(String)
+    first_name = Column(String)
+    last_name = Column(String)
+    date_joined = Column(DateTime, default=datetime.utcnow)
+    banned = Column(Boolean, default=False)
+
+class Session(Base):
+    __tablename__ = 'sessions'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+Base.metadata.create_all(bind=engine)
 
 # Conversation states
 API_ID, API_HASH, PHONE, OTP, TWOFA = range(5)
@@ -32,6 +57,20 @@ def is_owner(user_id: int) -> bool:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    db = SessionLocal()
+    try:
+        if not db.query(User).filter(User.id == user.id).first():
+            new_user = User(
+                id=user.id,
+                username=user.username,
+                first_name=user.first_name,
+                last_name=user.last_name or ""
+            )
+            db.add(new_user)
+            db.commit()
+    finally:
+        db.close()
+
     welcome_msg = (
         f"👋 Welcome {utils.markdown.escape(user.first_name)}!\n"
         f"📛 Username: @{utils.markdown.escape(user.username)}\n"
@@ -54,7 +93,7 @@ async def cmds(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/stats - Bot statistics",
             "/ban [id] - Ban user",
             "/unban [id] - Unban user",
-            "/maintenance - Toggle maintenance"
+            "/maintenance - Maintenance notice"
         ])
     
     await update.message.reply_text("\n".join(commands))
@@ -117,12 +156,19 @@ async def otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not string_session:
             raise ValueError("Failed to generate session string")
 
+        # Track session in database
+        db = SessionLocal()
+        new_session = Session(user_id=update.effective_user.id)
+        db.add(new_session)
+        db.commit()
+        db.close()
+
         safe_session = utils.markdown.escape(string_session)
         await update.message.reply_text(
             f"✅ Session generated:\n`{safe_session}`",
             parse_mode='MarkdownV2'
         )
-        await log_to_owner(update, context)
+        await log_to_owner(update, context.user_data)
         return ConversationHandler.END
     
     except SessionPasswordNeededError:
@@ -148,6 +194,13 @@ async def twofa(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not string_session:
             raise ValueError("Failed to generate session string")
+
+        # Track session in database
+        db = SessionLocal()
+        new_session = Session(user_id=update.effective_user.id)
+        db.add(new_session)
+        db.commit()
+        db.close()
 
         safe_session = utils.markdown.escape(string_session)
         await update.message.reply_text(
@@ -200,18 +253,69 @@ async def revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("No active session found!")
 
-# Owner commands
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id):
         await update.message.reply_text("🚫 Access denied!")
         return
-    # Implement broadcast logic
+
+    if not context.args:
+        await update.message.reply_text("Usage: /broadcast <message>")
+        return
+
+    message = ' '.join(context.args)
+    db = SessionLocal()
+    users = db.query(User).filter(User.banned == False).all()
+    total = len(users)
+    success = 0
+    failed = 0
+
+    await update.message.reply_text(f"📨 Starting broadcast to {total} users...")
+
+    for user in users:
+        try:
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=message
+            )
+            success += 1
+        except Exception as e:
+            logger.error(f"Failed to send to {user.id}: {str(e)}")
+            failed += 1
+
+    report = (
+        f"📊 Broadcast Complete:\n"
+        f"• Total: {total}\n"
+        f"• Success: {success}\n"
+        f"• Failed: {failed}"
+    )
+    await update.message.reply_text(report)
+    db.close()
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id):
         await update.message.reply_text("🚫 Access denied!")
         return
-    # Implement stats logic
+
+    db = SessionLocal()
+    try:
+        user_count = db.query(func.count(User.id)).scalar()
+        session_count = db.query(func.count(Session.id)).scalar()
+        stats_msg = (
+            "📊 Bot Statistics:\n"
+            f"• Total Users: {user_count}\n"
+            f"• Sessions Generated: {session_count}"
+        )
+        await update.message.reply_text(stats_msg)
+    finally:
+        db.close()
+
+async def maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    maintenance_msg = (
+        "🔧 Maintenance in Progress\n"
+        "⏳ Time for some rest!\n"
+        "We'll be back shortly with improvements!"
+    )
+    await update.message.reply_text(maintenance_msg)
 
 def main():
     application = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
@@ -243,6 +347,7 @@ def main():
     # Owner commands
     application.add_handler(CommandHandler('broadcast', broadcast))
     application.add_handler(CommandHandler('stats', stats))
+    application.add_handler(CommandHandler('maintenance', maintenance))
 
     application.run_polling()
 
